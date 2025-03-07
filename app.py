@@ -36,28 +36,48 @@ target_columns = ['stationary', 'electronics', 'apparel', 'other']
 # Preprocess input data
 
 
-def preprocess_input(data):
+def predict_category(sample_data):
     try:
-        # Convert input to DataFrame
-        df = pd.DataFrame([data])
+        # Make a copy to avoid modifying the original
+        sample = sample_data.copy()
 
-        # Encode categorical features safely
+        # Apply the same preprocessing steps
         for col in ['brand', 'cat_0']:
-            if col in df.columns and col in label_encoders:
-                df[col] = df[col].map(lambda x: label_encoders[col].transform([x])[
-                                      0] if x in label_encoders[col].classes_ else -1)
+            if col in sample.columns and col in label_encoders:
+                # Handle unseen labels by setting them to -1
+                sample[col] = sample[col].apply(lambda x: label_encoders[col].transform([x])[
+                                                0] if x in label_encoders[col].classes_ else -1)
 
         # Apply frequency encoding
-        df['user_id_freq'] = df['user_id'].map(
-            user_counts) / len(data) if 'user_id' in df.columns else 0
-        df['product_id_freq'] = df['product_id'].map(
-            product_counts) / len(data) if 'product_id' in df.columns else 0
+        if 'user_id' in sample.columns:
+            sample['user_id_freq'] = sample['user_id'].map(
+                user_counts) / len(data)
+
+        if 'product_id' in sample.columns:
+            sample['product_id_freq'] = sample['product_id'].map(
+                product_counts) / len(data)
 
         # Scale numerical features
-        if 'price' in df.columns:
-            df[['price']] = scaler.transform(df[['price']])
+        if 'price' in sample.columns:
+            sample[['price']] = scaler.transform(sample[['price']])
 
-        return df[feature_cols]
+        # Make prediction
+        prediction = model.predict(sample[feature_cols])
+        probabilities = model.predict_proba(sample[feature_cols])
+
+        # Create a DataFrame for the binary predictions
+        binary_predictions = pd.DataFrame(prediction, columns=target_columns)
+
+        # Calculate probabilities for each class
+        class_probs = {}
+        for i, target in enumerate(target_columns):
+            class_probs[target] = probabilities[i][0][1]
+
+        # Get the recommended category
+        recommended_category = target_columns[np.argmax(
+            list(class_probs.values()))]
+
+        return binary_predictions, class_probs, recommended_category
     except Exception as e:
         print(f"Error in preprocessing: {e}")
         return None
@@ -68,26 +88,29 @@ def preprocess_input(data):
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        data = request.json
-        preprocessed_data = preprocess_input(data)
+        request_data = request.json
+        sample_data = pd.DataFrame([request_data])
 
-        if preprocessed_data is None:
+        print("Sample input:")
+        print(sample_data)
+
+        binary_predictions, class_probs, recommended_category = predict_category(
+            sample_data)
+
+        if binary_predictions is None:
             return jsonify({"error": "Invalid input data"}), 400
 
-        # Make prediction
-        prediction = model.predict(preprocessed_data)
-        probabilities = model.predict_proba(preprocessed_data)
+        print("\nPredicted categories (binary):")
+        print(binary_predictions)
 
-        # Extract probability of each category
-        class_probs = {target_columns[i]: probabilities[0][i]
-                       for i in range(len(target_columns))}
+        print("\nPredicted probabilities for each category:")
+        for category, prob in class_probs.items():
+            print(f"{category}: {prob:.4f}")
 
-        # Get the recommended category
-        recommended_category = target_columns[np.argmax(
-            list(class_probs.values()))]
+        print("\nRecommended category:", recommended_category)
 
         return jsonify({
-            "predicted_categories": prediction.tolist(),
+            "predicted_categories": binary_predictions.to_dict(orient='records'),
             "probabilities": class_probs,
             "recommended_category": recommended_category
         })
